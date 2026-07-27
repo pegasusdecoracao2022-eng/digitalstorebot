@@ -1,3 +1,5 @@
+import os
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -8,21 +10,34 @@ from telegram.ext import (
     filters,
 )
 
-# TOKEN DO BOT
-TOKEN = "8688800056:AAEfa3wEnltrY4CeAPg2dWz53DMqtZzFanQ"
+# Token armazenado com segurança no Railway
+TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    raise RuntimeError(
+        "A variável BOT_TOKEN não foi configurada no Railway."
+    )
 
 
 # Links de pagamento da Kiwify
 LINKS_CHECKOUT = {
-    "bronze": "https://pay.kiwify.com.br/mZXVqh5",
-    "prata": "https://pay.kiwify.com.br/ncKuUX4",
-    "ouro": "https://pay.kiwify.com.br/buZicPn",
+    "tati_bronze": "https://pay.kiwify.com.br/mZXVqh5",
+    "tati_prata": "https://pay.kiwify.com.br/ncKuUX4",
+    "tati_ouro": "https://pay.kiwify.com.br/buZicPn",
 }
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     teclado = [
-        [InlineKeyboardButton("💃 Danças", callback_data="dancas")]
+        [
+            InlineKeyboardButton(
+                "💃 Danças",
+                callback_data="categoria_dancas",
+            )
+        ]
     ]
 
     await update.message.reply_text(
@@ -32,54 +47,91 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def botoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def botoes(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     query = update.callback_query
     await query.answer()
 
-    # Menu principal da Tati Maia
-    if query.data == "dancas":
+    # Lista de dançarinas
+    if query.data == "categoria_dancas":
         teclado = [
             [
                 InlineKeyboardButton(
-                    "🥉 Tati Maia - Bronze",
-                    callback_data="bronze",
+                    "💃 Tati Maia",
+                    callback_data="modelo_tati_maia",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🥈 Tati Maia - Prata",
-                    callback_data="prata",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🥇 Tati Maia - Ouro",
-                    callback_data="ouro",
+                    "🏠 Menu principal",
+                    callback_data="menu_principal",
                 )
             ],
         ]
 
         await query.edit_message_text(
-            "💃 TATI MAIA\n\nEscolha um plano:",
+            "💃 DANÇAS\n\n"
+            "Escolha uma dançarina:",
+            reply_markup=InlineKeyboardMarkup(teclado),
+        )
+
+    # Planos da Tati Maia
+    elif query.data == "modelo_tati_maia":
+        teclado = [
+            [
+                InlineKeyboardButton(
+                    "🥉 Bronze",
+                    callback_data="tati_bronze",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🥈 Prata",
+                    callback_data="tati_prata",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🥇 Ouro",
+                    callback_data="tati_ouro",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔙 Voltar",
+                    callback_data="categoria_dancas",
+                )
+            ],
+        ]
+
+        await query.edit_message_text(
+            "💃 TATI MAIA\n\n"
+            "Escolha um plano:",
             reply_markup=InlineKeyboardMarkup(teclado),
         )
 
     # Informações dos planos
-    elif query.data in ["bronze", "prata", "ouro"]:
+    elif query.data in [
+        "tati_bronze",
+        "tati_prata",
+        "tati_ouro",
+    ]:
         planos = {
-            "bronze": {
+            "tati_bronze": {
                 "nome": "🥉 PLANO BRONZE",
                 "preco": "19,90",
                 "videos": "200 vídeos exclusivos",
                 "atualizacao": "Atualizações mensais",
             },
-            "prata": {
+            "tati_prata": {
                 "nome": "🥈 PLANO PRATA",
                 "preco": "39,90",
                 "videos": "600 vídeos exclusivos",
                 "atualizacao": "Atualizações semanais",
             },
-            "ouro": {
+            "tati_ouro": {
                 "nome": "🥇 PLANO OURO",
                 "preco": "59,90",
                 "videos": "Todo o acervo",
@@ -99,14 +151,15 @@ async def botoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "🔙 Voltar",
-                    callback_data="dancas",
+                    "🔙 Voltar aos planos",
+                    callback_data="modelo_tati_maia",
                 )
             ],
         ]
 
         texto = (
             f"{plano['nome']}\n\n"
+            f"💃 Modelo: Tati Maia\n\n"
             f"💰 Valor: R$ {plano['preco']} por mês\n\n"
             f"📂 Conteúdo\n"
             f"• {plano['videos']}\n\n"
@@ -122,8 +175,25 @@ async def botoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(teclado),
         )
 
+    # Retorno ao menu principal
+    elif query.data == "menu_principal":
+        teclado = [
+            [
+                InlineKeyboardButton(
+                    "💃 Danças",
+                    callback_data="categoria_dancas",
+                )
+            ]
+        ]
 
-# Mostra no terminal o ID dos canais onde o bot é administrador
+        await query.edit_message_text(
+            "🛒 Bem-vindo à Digital Store!\n\n"
+            "Escolha uma categoria:",
+            reply_markup=InlineKeyboardMarkup(teclado),
+        )
+
+
+# Mostra no terminal o ID dos canais
 async def mostrar_id_canal(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -137,7 +207,6 @@ async def mostrar_id_canal(
         print("==============================\n")
 
 
-# Inicialização do bot
 app = Application.builder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
