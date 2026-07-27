@@ -9,7 +9,7 @@ from telegram.ext import (
 )
 
 # TOKEN DO BOT
-TOKEN = "8688800056:AAGJTmlPJiaPckAu-ab1UFMbYvQBVyU2wKI"
+TOKEN = "8688800056:AAEfa3wEnltrY4CeAPg2dWz53DMqtZzFanQ"
 
 
 # Links de pagamento da Kiwify
