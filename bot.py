@@ -222,4 +222,4 @@ app.add_handler(
 print("✅ Bot iniciado...")
 print("✅ Checkouts da Kiwify configurados.")
 
-app.run_polling()
+app.run_polling() 
