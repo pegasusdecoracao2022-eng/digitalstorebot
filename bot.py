@@ -1,14 +1,16 @@
+import asyncio
 import hashlib
 import hmac
 import logging
 import os
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
 from flask import Flask, jsonify, request
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -50,6 +52,13 @@ KIWIFY_WEBHOOK_SECRET = os.getenv("KIWIFY_WEBHOOK_SECRET")
 
 # Porta fornecida automaticamente pelo Railway
 PORT = int(os.getenv("PORT", "8080"))
+
+# IDs dos canais privados
+CANAIS_PLANOS = {
+    "tati_bronze": -1004361035516,
+    "tati_prata": -1004438900351,
+    "tati_ouro": -1004397041536,
+}
 
 
 # ============================================================
@@ -200,6 +209,63 @@ def identificar_chat_id(
         return None
 
 
+async def enviar_acesso_telegram(
+    plano: str,
+    chat_id: int,
+) -> str:
+    """
+    Cria um convite individual e envia ao comprador.
+
+    O convite aceita apenas uma entrada e expira em 24 horas.
+    """
+    canal_id = CANAIS_PLANOS.get(plano)
+
+    if canal_id is None:
+        raise ValueError(
+            f"Não existe canal configurado para o plano {plano}."
+        )
+
+    expira_em = datetime.now(timezone.utc) + timedelta(hours=24)
+
+    async with Bot(TOKEN) as bot:
+        convite = await bot.create_chat_invite_link(
+            chat_id=canal_id,
+            name=f"{plano}-{chat_id}",
+            expire_date=expira_em,
+            member_limit=1,
+            creates_join_request=False,
+        )
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "✅ Pagamento confirmado!\n\n"
+                "Seu acesso foi liberado. Clique no link abaixo "
+                "para entrar no canal do seu plano:\n\n"
+                f"{convite.invite_link}\n\n"
+                "Este convite permite apenas uma entrada e expira "
+                "em 24 horas."
+            ),
+        )
+
+    return convite.invite_link
+
+
+def processar_entrega_acesso(
+    plano: str,
+    chat_id: int,
+) -> str:
+    """
+    Executa a função assíncrona do Telegram dentro da rota Flask.
+    """
+    return asyncio.run(
+        enviar_acesso_telegram(
+            plano=plano,
+            chat_id=chat_id,
+        )
+    )
+
+
 def assinatura_kiwify_valida() -> bool:
     """
     Valida a assinatura enviada pela Kiwify.
@@ -313,12 +379,59 @@ def webhook_kiwify():
     logger.info("Pedido/transação: %s", pedido_id)
     logger.info("========================================")
 
+    evento_normalizado = str(evento or "").strip().lower()
+    eventos_aprovados = {
+        "paid",
+        "approved",
+        "order_approved",
+        "compra aprovada",
+    }
+
+    acesso_enviado = False
+
+    if evento_normalizado in eventos_aprovados:
+        if plano is None or chat_id is None:
+            logger.warning(
+                "Compra aprovada sem plano ou chat_id. "
+                "Nenhum acesso foi enviado."
+            )
+        else:
+            try:
+                link_convite = processar_entrega_acesso(
+                    plano=plano,
+                    chat_id=chat_id,
+                )
+
+                acesso_enviado = True
+
+                logger.info(
+                    "Acesso enviado ao Telegram %s para o plano %s.",
+                    chat_id,
+                    plano,
+                )
+                logger.info(
+                    "Convite criado com sucesso: %s",
+                    link_convite,
+                )
+            except Exception:
+                logger.exception(
+                    "Falha ao criar ou enviar o convite do Telegram."
+                )
+
+                return jsonify(
+                    {
+                        "status": "erro",
+                        "mensagem": "Falha ao entregar o acesso.",
+                    }
+                ), 500
+
     return jsonify(
         {
             "status": "recebido",
             "evento": evento,
             "plano": plano,
             "chat_id_encontrado": chat_id is not None,
+            "acesso_enviado": acesso_enviado,
         }
     ), 200
 
