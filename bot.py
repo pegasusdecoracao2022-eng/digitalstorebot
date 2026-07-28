@@ -649,6 +649,10 @@ async def mostrar_id_canal(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    logger.info("===================================")
+    logger.info("ATUALIZAÇÃO RECEBIDA: %s", update)
+    logger.info("===================================")
+
     if update.channel_post:
         canal = update.channel_post.chat
 
@@ -696,14 +700,12 @@ def main() -> None:
         )
     )
 
-   async def mostrar_id_canal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("===================================")
-    logger.info(update)
-    logger.info("===================================")
-
-    if update.channel_post:
-        logger.info("CANAL: %s", update.channel_post.chat.title)
-        logger.info("ID: %s", update.channel_post.chat.id)
+    app.add_handler(
+        MessageHandler(
+            filters.ALL,
+            mostrar_id_canal,
+        )
+    )
 
     app.add_error_handler(tratar_erro)
 
