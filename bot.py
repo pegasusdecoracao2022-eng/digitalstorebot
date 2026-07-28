@@ -1,7 +1,11 @@
 import logging
 import os
+import threading
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlencode
 
+from flask import Flask, jsonify, request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -12,7 +16,11 @@ from telegram.ext import (
     filters,
 )
 
-# Exibe erros importantes nos logs do Railway
+
+# ============================================================
+# LOGS
+# ============================================================
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -20,10 +28,13 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Pasta onde está o arquivo bot.py
+
+# ============================================================
+# CONFIGURAÇÕES
+# ============================================================
+
 BASE_DIR = Path(__file__).resolve().parent
 
-# Token armazenado nas Variables do Railway
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
@@ -31,8 +42,285 @@ if not TOKEN:
         "A variável BOT_TOKEN não foi configurada no Railway."
     )
 
+# Chave que protegerá o endereço do webhook
+KIWIFY_WEBHOOK_SECRET = os.getenv("KIWIFY_WEBHOOK_SECRET")
 
-# Links de pagamento da Kiwify
+# Porta fornecida automaticamente pelo Railway
+PORT = int(os.getenv("PORT", "8080"))
+
+
+# ============================================================
+# FLASK — SERVIDOR QUE RECEBERÁ A KIWIFY
+# ============================================================
+
+servidor = Flask(__name__)
+
+
+@servidor.get("/")
+def pagina_inicial():
+    """
+    Usada para verificar se o servidor está online.
+    """
+    return jsonify(
+        {
+            "status": "online",
+            "servico": "Digital Store Bot",
+            "webhook": "ativo",
+        }
+    ), 200
+
+
+@servidor.get("/health")
+def health():
+    """
+    Rota de verificação do Railway.
+    """
+    return jsonify({"status": "ok"}), 200
+
+
+def procurar_valor(
+    dados: Any,
+    nomes_possiveis: set[str],
+) -> Any:
+    """
+    Procura recursivamente uma informação dentro do JSON.
+
+    Isso ajuda porque os dados da Kiwify podem estar organizados
+    em diferentes níveis do objeto recebido.
+    """
+    if isinstance(dados, dict):
+        for chave, valor in dados.items():
+            chave_normalizada = str(chave).lower()
+
+            if chave_normalizada in nomes_possiveis:
+                return valor
+
+        for valor in dados.values():
+            resultado = procurar_valor(
+                valor,
+                nomes_possiveis,
+            )
+
+            if resultado is not None:
+                return resultado
+
+    elif isinstance(dados, list):
+        for item in dados:
+            resultado = procurar_valor(
+                item,
+                nomes_possiveis,
+            )
+
+            if resultado is not None:
+                return resultado
+
+    return None
+
+
+def identificar_plano(
+    dados: dict[str, Any],
+) -> str | None:
+    """
+    Tenta identificar qual plano foi comprado.
+
+    Primeiro procura o parâmetro s1 enviado pelo checkout.
+    Depois procura pelo nome do produto.
+    """
+    parametro_s1 = procurar_valor(
+        dados,
+        {
+            "s1",
+            "tracking_s1",
+        },
+    )
+
+    if parametro_s1:
+        plano = str(parametro_s1).lower().strip()
+
+        if plano in PLANOS:
+            return plano
+
+    nome_produto = procurar_valor(
+        dados,
+        {
+            "product_name",
+            "produto",
+            "nome_produto",
+            "product",
+        },
+    )
+
+    if nome_produto:
+        nome = str(nome_produto).lower()
+
+        if "bronze" in nome:
+            return "tati_bronze"
+
+        if "prata" in nome:
+            return "tati_prata"
+
+        if "ouro" in nome:
+            return "tati_ouro"
+
+    return None
+
+
+def identificar_chat_id(
+    dados: dict[str, Any],
+) -> int | None:
+    """
+    Extrai o ID do Telegram enviado no parâmetro src.
+
+    Formato usado:
+    tg_123456789
+    """
+    parametro_src = procurar_valor(
+        dados,
+        {
+            "src",
+            "tracking_src",
+            "source",
+        },
+    )
+
+    if not parametro_src:
+        return None
+
+    valor = str(parametro_src).strip()
+
+    if valor.startswith("tg_"):
+        valor = valor.removeprefix("tg_")
+
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+@servidor.post("/webhook/kiwify")
+def webhook_kiwify():
+    """
+    Recebe os eventos enviados pela Kiwify.
+
+    A URL deverá conter:
+    ?token=SUA_CHAVE_SECRETA
+    """
+    token_recebido = request.args.get("token", "")
+
+    if not KIWIFY_WEBHOOK_SECRET:
+        logger.error(
+            "A variável KIWIFY_WEBHOOK_SECRET não foi configurada."
+        )
+
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "Webhook não configurado.",
+            }
+        ), 500
+
+    if token_recebido != KIWIFY_WEBHOOK_SECRET:
+        logger.warning(
+            "Tentativa de acesso ao webhook com token inválido."
+        )
+
+        return jsonify(
+            {
+                "status": "negado",
+                "mensagem": "Token inválido.",
+            }
+        ), 401
+
+    dados = request.get_json(silent=True)
+
+    if not isinstance(dados, dict):
+        logger.warning(
+            "A Kiwify enviou uma requisição sem JSON válido."
+        )
+
+        return jsonify(
+            {
+                "status": "erro",
+                "mensagem": "JSON inválido.",
+            }
+        ), 400
+
+    evento = procurar_valor(
+        dados,
+        {
+            "event",
+            "evento",
+            "event_type",
+            "type",
+            "status",
+            "order_status",
+        },
+    )
+
+    plano = identificar_plano(dados)
+    chat_id = identificar_chat_id(dados)
+
+    pedido_id = procurar_valor(
+        dados,
+        {
+            "order_id",
+            "pedido_id",
+            "transaction_id",
+            "sale_id",
+            "id",
+        },
+    )
+
+    logger.info("========================================")
+    logger.info("WEBHOOK DA KIWIFY RECEBIDO")
+    logger.info("Evento/status: %s", evento)
+    logger.info("Plano identificado: %s", plano)
+    logger.info("Telegram chat_id: %s", chat_id)
+    logger.info("Pedido/transação: %s", pedido_id)
+    logger.info("========================================")
+
+    # Nesta primeira etapa apenas recebemos e identificamos o evento.
+    # Na próxima etapa colocaremos aqui:
+    #
+    # pagamento aprovado -> gerar convite
+    # cancelamento -> remover acesso
+    # reembolso -> remover acesso
+    # chargeback -> remover acesso
+
+    return jsonify(
+        {
+            "status": "recebido",
+            "evento": evento,
+            "plano": plano,
+            "chat_id_encontrado": chat_id is not None,
+        }
+    ), 200
+
+
+def iniciar_servidor_flask() -> None:
+    """
+    Inicia o Flask em uma thread separada.
+
+    Assim o servidor da Kiwify e o bot do Telegram
+    funcionam ao mesmo tempo.
+    """
+    logger.info(
+        "Servidor Flask iniciado na porta %s.",
+        PORT,
+    )
+
+    servidor.run(
+        host="0.0.0.0",
+        port=PORT,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+# ============================================================
+# CHECKOUTS E PLANOS
+# ============================================================
+
 LINKS_CHECKOUT = {
     "tati_bronze": "https://pay.kiwify.com.br/mZXVqh5",
     "tati_prata": "https://pay.kiwify.com.br/ncKuUX4",
@@ -40,31 +328,73 @@ LINKS_CHECKOUT = {
 }
 
 
-# Informações dos planos
 PLANOS = {
     "tati_bronze": {
         "nome": "🥉 PLANO BRONZE",
         "preco": "19,90",
         "videos": "200 vídeos exclusivos",
         "atualizacao": "Atualizações mensais",
-        "imagem": BASE_DIR / "fotos" / "tati maia" / "tati 1.jpg",
+        "imagem": (
+            BASE_DIR
+            / "fotos"
+            / "tati maia"
+            / "tati 1.jpg"
+        ),
     },
     "tati_prata": {
         "nome": "🥈 PLANO PRATA",
         "preco": "39,90",
         "videos": "500 vídeos exclusivos",
         "atualizacao": "Atualizações semanais",
-        "imagem": BASE_DIR / "fotos" / "tati maia" / "tati 3.jpg",
+        "imagem": (
+            BASE_DIR
+            / "fotos"
+            / "tati maia"
+            / "tati 3.jpg"
+        ),
     },
     "tati_ouro": {
         "nome": "🥇 PLANO OURO",
         "preco": "59,90",
         "videos": "900 vídeos exclusivos",
         "atualizacao": "Todas as atualizações futuras",
-        "imagem": BASE_DIR / "fotos" / "tati maia" / "tati 2.jpg",
+        "imagem": (
+            BASE_DIR
+            / "fotos"
+            / "tati maia"
+            / "tati 2.jpg"
+        ),
     },
 }
 
+
+def criar_link_checkout(
+    plano: str,
+    chat_id: int,
+) -> str:
+    """
+    Cria um checkout personalizado para cada usuário.
+
+    src identifica o usuário do Telegram.
+    s1 identifica o plano escolhido.
+    """
+    link_base = LINKS_CHECKOUT[plano]
+
+    parametros = urlencode(
+        {
+            "src": f"tg_{chat_id}",
+            "s1": plano,
+        }
+    )
+
+    separador = "&" if "?" in link_base else "?"
+
+    return f"{link_base}{separador}{parametros}"
+
+
+# ============================================================
+# TECLADOS
+# ============================================================
 
 def teclado_menu_principal() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -129,6 +459,10 @@ def teclado_planos_tati() -> InlineKeyboardMarkup:
     )
 
 
+# ============================================================
+# FUNÇÕES DO TELEGRAM
+# ============================================================
+
 async def substituir_por_texto(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -138,10 +472,14 @@ async def substituir_por_texto(
     """
     Troca a tela atual por uma mensagem de texto.
 
-    Se a tela atual for uma foto, apaga a foto e envia texto.
-    Se já for uma mensagem de texto, apenas edita a mensagem.
+    Se a tela atual for foto, apaga a foto e envia texto.
+    Se for texto, edita a mensagem atual.
     """
     query = update.callback_query
+
+    if not query or not query.message:
+        return
+
     mensagem = query.message
     chat_id = mensagem.chat.id
 
@@ -185,7 +523,6 @@ async def botoes(
 
     await query.answer()
 
-    # Lista de modelos
     if query.data == "categoria_dancas":
         await substituir_por_texto(
             update=update,
@@ -197,7 +534,6 @@ async def botoes(
             teclado=teclado_modelos(),
         )
 
-    # Planos da Tati Maia
     elif query.data == "modelo_tati_maia":
         await substituir_por_texto(
             update=update,
@@ -209,12 +545,16 @@ async def botoes(
             teclado=teclado_planos_tati(),
         )
 
-    # Tela de um plano
     elif query.data in PLANOS:
-        plano = PLANOS[query.data]
+        plano_id = query.data
+        plano = PLANOS[plano_id]
         caminho_imagem = plano["imagem"]
-        link_pagamento = LINKS_CHECKOUT[query.data]
         chat_id = query.message.chat.id
+
+        link_pagamento = criar_link_checkout(
+            plano=plano_id,
+            chat_id=chat_id,
+        )
 
         teclado = InlineKeyboardMarkup(
             [
@@ -258,7 +598,6 @@ async def botoes(
             )
             return
 
-        # Remove a tela anterior para não acumular menus
         await query.message.delete()
 
         with caminho_imagem.open("rb") as foto:
@@ -269,7 +608,6 @@ async def botoes(
                 reply_markup=teclado,
             )
 
-    # Menu principal
     elif query.data == "menu_principal":
         await substituir_por_texto(
             update=update,
@@ -282,7 +620,6 @@ async def botoes(
         )
 
 
-# Mostra nos logs o ID de canais onde o bot recebe publicações
 async def mostrar_id_canal(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -306,11 +643,33 @@ async def tratar_erro(
     )
 
 
+# ============================================================
+# INICIALIZAÇÃO
+# ============================================================
+
 def main() -> None:
+    thread_flask = threading.Thread(
+        target=iniciar_servidor_flask,
+        daemon=True,
+        name="servidor-flask",
+    )
+
+    thread_flask.start()
+
     app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(botoes))
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start,
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            botoes,
+        )
+    )
 
     app.add_handler(
         MessageHandler(
@@ -323,6 +682,7 @@ def main() -> None:
 
     logger.info("Bot iniciado.")
     logger.info("Checkouts e imagens configurados.")
+    logger.info("Servidor da Kiwify configurado.")
 
     app.run_polling()
 
