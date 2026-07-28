@@ -15,6 +15,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -701,10 +702,11 @@ def main() -> None:
     )
 
     app.add_handler(
-        MessageHandler(
-            filters.ALL,
+        TypeHandler(
+            Update,
             mostrar_id_canal,
-        )
+        ),
+        group=1,
     )
 
     app.add_error_handler(tratar_erro)
