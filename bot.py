@@ -461,7 +461,7 @@ def iniciar_servidor_flask() -> None:
 # ============================================================
 
 LINKS_CHECKOUT = {
-    "tati_bronze": "https://pay.kiwify.com.br/9yfHOUk",
+    "tati_bronze": "https://pay.kiwify.com.br/mZXVqh5",
     "tati_prata": "https://pay.kiwify.com.br/ncKuUX4",
     "tati_ouro": "https://pay.kiwify.com.br/buZicPn",
 }
