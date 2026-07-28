@@ -696,12 +696,14 @@ def main() -> None:
         )
     )
 
-    app.add_handler(
-        MessageHandler(
-            filters.UpdateType.CHANNEL_POST,
-            mostrar_id_canal,
-        )
-    )
+   async def mostrar_id_canal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("===================================")
+    logger.info(update)
+    logger.info("===================================")
+
+    if update.channel_post:
+        logger.info("CANAL: %s", update.channel_post.chat.title)
+        logger.info("ID: %s", update.channel_post.chat.id)
 
     app.add_error_handler(tratar_erro)
 
