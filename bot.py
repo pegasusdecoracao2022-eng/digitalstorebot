@@ -197,15 +197,54 @@ def identificar_chat_id(
         return None
 
 
+def obter_token_kiwify(dados: dict[str, Any]) -> str:
+    """
+    Tenta localizar o token enviado pela Kiwify.
+
+    Aceita o token no corpo JSON, cabeçalhos ou URL.
+    Isso facilita o primeiro teste para confirmar exatamente
+    como a Kiwify está enviando a autenticação.
+    """
+
+    # Token dentro do JSON
+    token_json = procurar_valor(
+        dados,
+        {
+            "token",
+            "webhook_token",
+            "webhooktoken",
+        },
+    )
+
+    if token_json:
+        return str(token_json).strip()
+
+    # Possíveis cabeçalhos
+    for nome_cabecalho in (
+        "X-Kiwify-Token",
+        "Kiwify-Token",
+        "Token",
+        "Authorization",
+    ):
+        valor = request.headers.get(nome_cabecalho)
+
+        if valor:
+            valor = valor.strip()
+
+            if valor.lower().startswith("bearer "):
+                valor = valor[7:].strip()
+
+            return valor
+
+    # Mantém compatibilidade com token na URL
+    return request.args.get("token", "").strip()
+
+
 @servidor.post("/webhook/kiwify")
 def webhook_kiwify():
     """
     Recebe os eventos enviados pela Kiwify.
-
-    A URL deverá conter:
-    ?token=SUA_CHAVE_SECRETA
     """
-    token_recebido = request.args.get("token", "")
 
     if not KIWIFY_WEBHOOK_SECRET:
         logger.error(
@@ -218,18 +257,6 @@ def webhook_kiwify():
                 "mensagem": "Webhook não configurado.",
             }
         ), 500
-
-    if token_recebido != KIWIFY_WEBHOOK_SECRET:
-        logger.warning(
-            "Tentativa de acesso ao webhook com token inválido."
-        )
-
-        return jsonify(
-            {
-                "status": "negado",
-                "mensagem": "Token inválido.",
-            }
-        ), 401
 
     dados = request.get_json(silent=True)
 
@@ -244,6 +271,30 @@ def webhook_kiwify():
                 "mensagem": "JSON inválido.",
             }
         ), 400
+
+    token_recebido = obter_token_kiwify(dados)
+
+    if token_recebido != KIWIFY_WEBHOOK_SECRET:
+        logger.warning(
+            "Webhook recebido com token inválido ou ausente."
+        )
+
+        logger.info(
+            "Cabeçalhos recebidos: %s",
+            list(request.headers.keys()),
+        )
+
+        logger.info(
+            "Campos principais do JSON: %s",
+            list(dados.keys()),
+        )
+
+        return jsonify(
+            {
+                "status": "negado",
+                "mensagem": "Token inválido.",
+            }
+        ), 401
 
     evento = procurar_valor(
         dados,
@@ -279,14 +330,6 @@ def webhook_kiwify():
     logger.info("Pedido/transação: %s", pedido_id)
     logger.info("========================================")
 
-    # Nesta primeira etapa apenas recebemos e identificamos o evento.
-    # Na próxima etapa colocaremos aqui:
-    #
-    # pagamento aprovado -> gerar convite
-    # cancelamento -> remover acesso
-    # reembolso -> remover acesso
-    # chargeback -> remover acesso
-
     return jsonify(
         {
             "status": "recebido",
@@ -295,8 +338,6 @@ def webhook_kiwify():
             "chat_id_encontrado": chat_id is not None,
         }
     ), 200
-
-
 def iniciar_servidor_flask() -> None:
     """
     Inicia o Flask em uma thread separada.
